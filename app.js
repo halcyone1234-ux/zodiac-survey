@@ -6,14 +6,14 @@
   const LS = Z.LS;
 
   /* ---------- 共用狀態 ---------- */
-  const S = { session: null, groups: null, dimensions: null, questions: null, votes: null, survey: null, responses: null, joined: null };
+  const S = { session: null, dimensions: null, questions: null, votes: null, survey: null, responses: null, joined: null };
   const me = {
+    id: LS.get('zs.id', ''),
     sign: LS.get('zs.sign', ''),
-    group: LS.get('zs.group', ''),
     pin: LS.get('zs.pin', ''),
   };
   const session = () => Object.assign({}, Z.DEFAULT_SESSION, S.session || {});
-  const groups = () => S.groups || Z.DEFAULT_GROUPS;
+  const concepts = () => { const c = session().concepts; return Array.isArray(c) && c.length ? c : Z.DEFAULT_SESSION.concepts; };
   const isAdmin = () => me.pin === Z.adminPin;
 
   /* ---------- DOM 小工具 ---------- */
@@ -29,15 +29,9 @@
       else if (k === 'value') el.value = v;
       else el.setAttribute(k, v);
     }
-    const add = (c) => {
-      if (c === null || c === undefined || c === false) return;
-      if (Array.isArray(c)) c.forEach(add);
-      else el.appendChild(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c);
-    };
-    children.forEach(add);
+    mount(el, children);
     return el;
   }
-  const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
   /* 跟 h() 一樣會略過 null／false，並展開陣列 */
   function mount(el, ...children) {
     const add = (c) => {
@@ -48,6 +42,7 @@
     children.forEach(add); return el;
   }
   window.ZSmount = mount;
+  const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
   let toastTimer;
   function toast(msg) {
     const t = document.getElementById('toast');
@@ -61,6 +56,7 @@
   function questionList() { return Z.toList(S.questions, 'at'); }
   function dimList() { return Z.toList(S.dimensions, 'at'); }
   function dimName(id) { const d = S.dimensions && S.dimensions[id]; return d ? d.name : '（未指定構面）'; }
+  const isMine = (obj) => !!obj && (obj.deviceId === Z.deviceId || (!!me.id && obj.by === me.id));
   /* 題目代碼：定稿後依 survey.order，否則依出題順序 */
   function qCodes() {
     const map = {};
@@ -77,7 +73,7 @@
     const no = list.filter((x) => x.ok === false).length;
     const tags = {};
     list.forEach((x) => [].concat(x.sins || [], x.knives || []).forEach((t) => { tags[t] = (tags[t] || 0) + 1; }));
-    const notes = list.map((x) => x.note).filter(Boolean);
+    const notes = list.filter((x) => x.note).map((x) => ({ note: x.note, by: x.by || '' }));
     return { ok, no, n: ok + no, rate: ok + no ? ok / (ok + no) : 0, tags, notes };
   }
   function suggestedIncluded() {
@@ -95,6 +91,7 @@
     return S.survey.order.filter((id) => S.questions && S.questions[id] && S.survey.included && S.survey.included[id]).map((id) => Object.assign({ id }, S.questions[id]));
   }
   function respId(round, target) { return Z.deviceId + '_r' + round + '_' + (round === 2 ? target : 'self'); }
+  const joinedList = () => Z.toList(S.joined, 'at');
 
   /* ---------- 共用元件 ---------- */
   function signChips(selected, onPick) {
@@ -104,19 +101,18 @@
   }
   function likertInput(name, value, anchors, onChange) {
     const a = anchors || { low: '非常不同意', high: '非常同意' };
-    const box = h('div', { class: 'likert' }, [1, 2, 3, 4, 5].map((v) => h('label', null,
+    return h('div', { class: 'likert' }, [1, 2, 3, 4, 5].map((v) => h('label', null,
       h('input', { type: 'radio', name, value: v, checked: value === v, onchange: () => onChange(v) }),
       h('span', { class: 'num' }, v),
       h('span', { class: 'anchor' }, v === 1 ? a.low : v === 5 ? a.high : ' '),
     )));
-    return box;
   }
   function questionCard(q, code, extra) {
     return h('div', { class: 'card q-card' },
       h('div', { class: 'q-head' }, h('span', { class: 'q-code' }, code), h('span', { class: 'q-text' }, q.text), q.version > 1 ? h('span', { class: 'tag' }, 'v' + q.version) : null),
       h('div', { class: 'q-meta' },
         h('span', { class: 'tag concept' }, q.concept), h('span', { class: 'tag' }, dimName(q.dimId)), h('span', { class: 'tag' }, qTypeDesc(q)),
-        h('span', { class: 'tag' }, (groups()[q.group] || {}).name || q.group),
+        q.by ? h('span', { class: 'tag' }, '出題：' + q.by) : null,
         (q.techniques || []).map((t) => h('span', { class: 'tag' }, '招：' + t.split('（')[0])),
       ),
       q.type === 'choice' && q.options ? h('div', { class: 'muted', style: 'font-size:.9rem' }, '選項：' + q.options.join('／')) : null,
@@ -124,104 +120,113 @@
       extra || null,
     );
   }
+  function needJoin(root) {
+    mount(root, h('div', { class: 'notice warn' }, '你還沒進場。請先回「進場」輸入 ID 與星座。 ', h('a', { href: '#join' }, '前往進場')));
+  }
 
   /* ---------- 畫面：進場 ---------- */
   function viewJoin(root) {
-    let sign = me.sign, group = me.group;
+    let sign = me.sign, id = me.id;
     const joined = () => S.joined && S.joined[Z.deviceId];
+    const idTaken = (clean) => joinedList().some((j) => j.id === clean && j.id !== (joined() || {}).id);
     function render() {
       clear(root);
       const s = session();
-      mount(root, 
+      mount(root,
         h('div', { class: 'stack' },
           h('p', { class: 'eyebrow' }, '量化研究法（上）第 6 週'),
           h('h1', null, '金牛座真的愛家嗎？'),
-          h('p', { class: 'muted' }, '今天由你們設計那把尺。進場後，老師推進每個階段，你的手機畫面會自動切換。所有作答一律匿名，只記星座與組別。'),
+          h('p', { class: 'muted' }, '今天由你們設計那把尺。進場後，老師推進每個階段，你的手機畫面會自動切換。出題與互評會顯示你的 ID；問卷作答一律匿名，只記星座。'),
+        ),
+        h('div', { class: 'card stack' },
+          h('h2', null, '你的 ID'),
+          h('label', { class: 'field' }, h('span', null, '暱稱或代號（投影與 Excel 會顯示）'),
+            h('input', { type: 'text', id: 'join-id', maxlength: 20, placeholder: '例：小鹿', value: id, oninput: (e) => { id = e.target.value; } })),
         ),
         h('div', { class: 'card stack' },
           h('h2', null, '你的星座（太陽星座）'),
           signChips(sign, (v) => { sign = v; render(); }),
         ),
-        h('div', { class: 'card stack' },
-          h('h2', null, '你的組別'),
-          h('div', { class: 'chips' }, Object.keys(groups()).map((g) => h('button', {
-            type: 'button', class: 'chip' + (group === g ? ' on' : ''), onclick: () => { group = g; render(); },
-          }, groups()[g].name + '・' + groups()[g].concept))),
-        ),
-        h('button', { class: 'primary block', disabled: !sign || !group, onclick: () => {
-          me.sign = sign; me.group = group; LS.set('zs.sign', sign); LS.set('zs.group', group);
-          B.set('joined/' + Z.deviceId, { sign, element: Z.signElement(sign), group, at: B.now() }).then(() => toast('已進場'));
+        h('button', { class: 'primary block', disabled: !sign, onclick: () => {
+          const clean = id.trim();
+          if (!clean) return toast('請輸入 ID');
+          if (idTaken(clean)) return toast('這個 ID 已有人使用，換一個吧');
+          me.sign = sign; me.id = clean; LS.set('zs.sign', sign); LS.set('zs.id', clean);
+          B.set('joined/' + Z.deviceId, { id: clean, sign, element: Z.signElement(sign), at: joined() ? joined().at : B.now() }).then(() => { toast('已進場'); render(); });
         } }, joined() ? '更新資料' : '進場'),
-        joined() ? h('div', { class: 'notice' }, '已進場。目前階段：', h('b', null, Z.phaseOf(s.phase).label), s.phase === 'lobby' ? '，等老師開始構面表。' : '。') : null,
-        h('p', { class: 'muted', style: 'font-size:.85rem' }, '已進場 ', h('b', { class: 'num' }, Object.keys(S.joined || {}).length), ' 人'),
+        joined() ? h('div', { class: 'notice' }, h('b', null, joined().id), '，已進場。目前階段：', h('b', null, Z.phaseOf(s.phase).label), s.phase === 'lobby' ? '，等老師開始構面表。' : '。') : null,
+        h('div', { class: 'card flat' }, h('p', { class: 'muted', style: 'font-size:.85rem' }, '已進場 ', h('b', { class: 'num' }, joinedList().length), ' 人'),
+          h('div', { class: 'chips', style: 'margin-top:6px' }, joinedList().map((j) => h('span', { class: 'tag el-' + j.element }, j.id + '・' + j.sign)))),
         h('p', { class: 'muted', style: 'font-size:.8rem' }, h('a', { href: '#board' }, '投影畫面'), ' ・ ', h('a', { href: '#admin' }, '老師控制台')),
       );
     }
     render();
-    return render;
+    return () => { if (document.activeElement && document.activeElement.id === 'join-id') return; render(); };
   }
 
   /* ---------- 畫面：構面表 ---------- */
   function viewDims(root) {
-    let tab = me.group || 'g1';
-    const draft = { name: '', indicators: '' };
+    const draft = { concept: '', name: '', indicators: '' };
     function render() {
       clear(root);
-      const gs = groups();
-      const g = gs[tab] || { name: tab, concept: '' };
-      const mine = tab === me.group;
-      const dims = dimList().filter((d) => d.group === tab);
-      mount(root, 
+      if (!me.id) { mount(root, h('h1', null, '構面表：把概念拆開')); needJoin(root); return; }
+      const cs = concepts(); if (!draft.concept || !cs.includes(draft.concept)) draft.concept = cs[0];
+      const dims = dimList();
+      mount(root,
         h('div', { class: 'stack' },
           h('h1', null, '構面表：把概念拆開'),
-          h('p', { class: 'muted' }, '概念 → 構面 → 指標。每一題都要答得出「這題在量哪個構面」，答不出來的題是裝飾品。'),
+          h('p', { class: 'muted' }, '概念 → 構面 → 指標。每一題都要答得出「這題在量哪個構面」，答不出來的題是裝飾品。全班共用一張表，大家一起填。'),
         ),
-        h('div', { class: 'chips' }, Object.keys(gs).map((k) => h('button', { type: 'button', class: 'chip' + (tab === k ? ' on' : ''), onclick: () => { tab = k; render(); } }, gs[k].name))),
-        h('div', { class: 'card stack' + (mine ? ' highlight' : '') },
-          h('div', { class: 'row between' }, h('h2', null, g.name + '：概念「' + g.concept + '」'), mine ? h('span', { class: 'tag concept' }, '本組') : null),
-          mine ? h('label', { class: 'field' }, h('span', null, '概念名稱（可自創：例如「獅子座愛面子」→ 概念「愛面子」）'),
-            h('input', { type: 'text', value: g.concept, onchange: (e) => B.update('groups/' + tab, { concept: e.target.value.trim() || g.concept, name: g.name }) })) : null,
-          dims.length ? h('div', { class: 'stack' }, dims.map((d, i) => h('div', { class: 'card flat' },
-            h('div', { class: 'row between' }, h('b', null, '構面 ' + (i + 1) + '：' + d.name),
-              mine ? h('button', { class: 'small', onclick: () => B.remove('dimensions/' + d.id) }, '刪除') : null),
-            d.indicators ? h('p', { style: 'white-space:pre-wrap;font-size:.95rem' }, '指標：' + d.indicators) : h('p', { class: 'muted' }, '（還沒寫指標）'),
-          ))) : h('div', { class: 'empty' }, '這組還沒有構面。'),
-          mine ? h('div', { class: 'stack' },
-            h('h3', null, '新增構面'),
-            h('label', { class: 'field' }, h('span', null, '構面名稱'), h('input', { type: 'text', id: 'dim-name', placeholder: '例：時間投入', value: draft.name, oninput: (e) => { draft.name = e.target.value; } })),
-            h('label', { class: 'field' }, h('span', null, '指標想法（有自然單位就直接量：次數、金額、天數）'), h('textarea', { id: 'dim-ind', placeholder: '例：每週與家人共餐次數・每天與家人交談分鐘數', value: draft.indicators, oninput: (e) => { draft.indicators = e.target.value; } })),
-            h('button', { class: 'primary', onclick: () => {
-              if (!draft.name.trim()) return toast('先寫構面名稱');
-              B.push('dimensions', { group: tab, concept: g.concept, name: draft.name.trim(), indicators: draft.indicators.trim(), at: B.now(), deviceId: Z.deviceId })
-                .then(() => { draft.name = ''; draft.indicators = ''; toast('已新增構面'); render(); });
-            } }, '新增'),
-          ) : h('p', { class: 'muted', style: 'font-size:.85rem' }, '只能編輯本組的構面表。要換組請回「進場」重新選組。'),
+        cs.map((c) => {
+          const list = dims.filter((d) => d.concept === c);
+          return h('div', { class: 'card stack' },
+            h('div', { class: 'row between' }, h('h2', null, '概念「' + c + '」'), h('span', { class: 'tag' }, list.length + ' 個構面')),
+            list.length ? list.map((d, i) => h('div', { class: 'card flat' },
+              h('div', { class: 'row between' }, h('b', null, '構面 ' + (i + 1) + '：' + d.name),
+                h('span', { class: 'row', style: 'gap:6px' }, d.by ? h('span', { class: 'tag' }, d.by) : null, isMine(d) ? h('button', { class: 'small', onclick: () => B.remove('dimensions/' + d.id) }, '刪除') : null)),
+              d.indicators ? h('p', { style: 'white-space:pre-wrap;font-size:.95rem' }, '指標：' + d.indicators) : h('p', { class: 'muted' }, '（還沒寫指標）'),
+            )) : h('div', { class: 'empty' }, '還沒有構面。'),
+          );
+        }),
+        h('div', { class: 'card stack highlight' },
+          h('h3', null, '新增構面'),
+          h('div', { class: 'field' }, h('span', { style: 'font-weight:600' }, '概念'),
+            h('div', { class: 'chips' }, cs.map((c) => h('button', { type: 'button', class: 'chip' + (draft.concept === c ? ' on' : ''), onclick: () => { draft.concept = c; render(); } }, c)))),
+          h('label', { class: 'field' }, h('span', null, '構面名稱'), h('input', { type: 'text', id: 'dim-name', placeholder: '例：時間投入', value: draft.name, oninput: (e) => { draft.name = e.target.value; } })),
+          h('label', { class: 'field' }, h('span', null, '指標想法（有自然單位就直接量：次數、金額、天數）'), h('textarea', { id: 'dim-ind', placeholder: '例：每週與家人共餐次數・每天與家人交談分鐘數', value: draft.indicators, oninput: (e) => { draft.indicators = e.target.value; } })),
+          h('button', { class: 'primary', onclick: () => {
+            if (!draft.name.trim()) return toast('先寫構面名稱');
+            B.push('dimensions', { concept: draft.concept, name: draft.name.trim(), indicators: draft.indicators.trim(), by: me.id, at: B.now(), deviceId: Z.deviceId })
+              .then(() => { draft.name = ''; draft.indicators = ''; toast('已新增構面'); render(); });
+          } }, '新增'),
         ),
         h('div', { class: 'notice' }, '邊填邊想：① 構面之間會不會重疊？② 有沒有漏掉重要面向（內容效度）？③ 每個指標能收比率就收比率。'),
       );
     }
     render();
-    return render;
+    return () => { if (document.activeElement && ['dim-name', 'dim-ind'].includes(document.activeElement.id)) return; render(); };
   }
 
   /* ---------- 畫面：出題 ---------- */
   function viewPropose(root) {
-    const blank = () => ({ id: null, text: '', type: 'likert', unit: '', options: '', anchors: { low: '非常不同意', high: '非常同意' }, dimId: '', newDim: '', techniques: [], version: 1 });
+    const blank = () => ({ id: null, concept: concepts()[0], text: '', type: 'likert', unit: '', options: '', anchors: { low: '非常不同意', high: '非常同意' }, dimId: '', newDim: '', techniques: [], version: 1 });
     let d = blank();
     const formBox = h('div', { class: 'card stack' });
     const listBox = h('div', { class: 'stack' });
-    mount(root, 
-      h('div', { class: 'stack' }, h('h1', null, '出題：把構面變成題目'), h('p', { class: 'muted' }, '每組 3–5 題，至少 1 題比率、1 題李克特。每題都要掛在一個構面下（追問測試）。')),
+    mount(root,
+      h('div', { class: 'stack' }, h('h1', null, '出題：把構面變成題目'), h('p', { class: 'muted' }, '每人至少出 1 題，全班目標 8–12 題，比率題與李克特題都要有。每題都要掛在一個構面下（追問測試）。')),
       formBox, listBox,
     );
     function renderForm() {
       clear(formBox);
-      const g = groups()[me.group] || { name: '未選組', concept: '' };
-      const dims = dimList().filter((x) => x.group === me.group);
+      if (!me.id) { needJoin(formBox); return; }
+      const cs = concepts(); if (!cs.includes(d.concept)) d.concept = cs[0];
+      const dims = dimList().filter((x) => x.concept === d.concept);
       const typeRadio = (t, label) => h('label', null, h('input', { type: 'radio', name: 'qtype', value: t, checked: d.type === t, onchange: () => { d.type = t; renderForm(); } }), ' ' + label);
-      mount(formBox, 
-        h('div', { class: 'row between' }, h('h2', null, d.id ? '修題（版本 ' + (d.version) + '）' : '新題目'), h('span', { class: 'tag concept' }, g.name + '・' + g.concept)),
-        !me.group ? h('div', { class: 'notice warn' }, '你還沒選組別，請先回「進場」選組。') : null,
+      mount(formBox,
+        h('div', { class: 'row between' }, h('h2', null, d.id ? '修題（版本 ' + (d.version) + '）' : '新題目'), h('span', { class: 'tag' }, '出題：' + me.id)),
+        h('div', { class: 'field' }, h('span', { style: 'font-weight:600' }, '概念'),
+          h('div', { class: 'chips' }, cs.map((c) => h('button', { type: 'button', class: 'chip' + (d.concept === c ? ' on' : ''), onclick: () => { d.concept = c; d.dimId = ''; renderForm(); } }, c)))),
         h('label', { class: 'field' }, h('span', null, '這題在量哪個構面？'),
           h('select', { id: 'q-dim', onchange: (e) => { d.dimId = e.target.value; renderForm(); } },
             h('option', { value: '', selected: !d.dimId }, '－ 請選擇 －'),
@@ -244,22 +249,21 @@
             d.techniques = d.techniques.includes(t) ? d.techniques.filter((x) => x !== t) : d.techniques.concat(t); renderForm();
           } }, t)))),
         h('div', { class: 'row' },
-          h('button', { class: 'primary', disabled: !me.group, onclick: submit }, d.id ? '儲存修題' : '送出題目'),
+          h('button', { class: 'primary', onclick: submit }, d.id ? '儲存修題' : '送出題目'),
           d.id ? h('button', { onclick: () => { d = blank(); renderForm(); } }, '取消') : null,
         ),
       );
     }
     async function submit() {
-      const g = groups()[me.group];
       if (!d.text.trim()) return toast('題目還沒寫');
       if (!d.dimId) return toast('請選構面（追問測試）');
       let dimId = d.dimId;
       if (dimId === '__new') {
         if (!d.newDim.trim()) return toast('請寫新構面名稱');
-        dimId = await B.push('dimensions', { group: me.group, concept: g.concept, name: d.newDim.trim(), indicators: '', at: B.now(), deviceId: Z.deviceId });
+        dimId = await B.push('dimensions', { concept: d.concept, name: d.newDim.trim(), indicators: '', by: me.id, at: B.now(), deviceId: Z.deviceId });
       }
       const q = {
-        group: me.group, concept: g.concept, dimId, text: d.text.trim(), type: d.type,
+        concept: d.concept, dimId, text: d.text.trim(), type: d.type, by: me.id,
         unit: d.type === 'ratio' ? d.unit.trim() : '',
         anchors: d.type === 'likert' ? { low: d.anchors.low.trim() || '非常不同意', high: d.anchors.high.trim() || '非常同意' } : null,
         options: d.type === 'choice' ? d.options.split('\n').map((x) => x.trim()).filter(Boolean) : null,
@@ -274,27 +278,26 @@
       clear(listBox);
       const codes = qCodes();
       const all = questionList();
-      const mine = all.filter((q) => q.group === me.group);
-      const others = all.filter((q) => q.group !== me.group);
-      mount(listBox, 
-        h('h2', null, '本組的題目（' + mine.length + '）'),
+      const mine = all.filter((q) => isMine(q));
+      const others = all.filter((q) => !isMine(q));
+      mount(listBox,
+        h('h2', null, '我出的題目（' + mine.length + '）'),
         mine.length ? mine.map((q) => questionCard(q, codes[q.id], h('div', { class: 'row' },
           h('button', { class: 'small', onclick: () => {
-            d = { id: q.id, at: q.at, text: q.text, type: q.type, unit: q.unit || '', options: (q.options || []).join('\n'), anchors: q.anchors || { low: '非常不同意', high: '非常同意' }, dimId: q.dimId, newDim: '', techniques: q.techniques || [], version: q.version || 1 };
+            d = { id: q.id, at: q.at, concept: q.concept, text: q.text, type: q.type, unit: q.unit || '', options: (q.options || []).join('\n'), anchors: q.anchors || { low: '非常不同意', high: '非常同意' }, dimId: q.dimId, newDim: '', techniques: q.techniques || [], version: q.version || 1 };
             renderForm(); window.scrollTo({ top: 0, behavior: 'smooth' });
           } }, '修題'),
           h('button', { class: 'small danger', onclick: () => B.remove('questions/' + q.id).then(() => toast('已刪除')) }, '刪除'),
         ))) : h('div', { class: 'empty' }, '還沒有題目。'),
-        h('details', null, h('summary', null, '其他組的題目（' + others.length + '）'), h('div', { class: 'stack', style: 'margin-top:8px' }, others.map((q) => questionCard(q, codes[q.id])))),
-        h('div', { class: 'notice' }, '交卷前自我健檢：□ 每題通過追問測試　□ 至少 1 題比率、1 題李克特　□ 七宗罪掃描通過　□ 至少用上上週問卷三招　□ 敏感題已匿名／置後'),
+        h('details', null, h('summary', null, '大家的題目（' + others.length + '）'), h('div', { class: 'stack', style: 'margin-top:8px' }, others.map((q) => questionCard(q, codes[q.id])))),
+        h('div', { class: 'notice' }, '交卷前自我健檢：□ 每題通過追問測試　□ 全班至少 1 題比率、1 題李克特　□ 七宗罪掃描通過　□ 用上上週問卷的招　□ 敏感題已匿名／置後'),
       );
     }
     renderForm(); renderList();
-    let lastDims = dimList().filter((x) => x.group === me.group).length;
+    let lastDims = dimList().length;
     return () => {
       renderList();
-      const n = dimList().filter((x) => x.group === me.group).length;
-      if (n !== lastDims) { lastDims = n; renderForm(); }
+      if (dimList().length !== lastDims || (me.id && !formBox.querySelector('#q-dim'))) { lastDims = dimList().length; renderForm(); }
     };
   }
 
@@ -304,7 +307,7 @@
     function myVote(qid) { return (S.votes && S.votes[qid] && S.votes[qid][Z.deviceId]) || null; }
     function save(qid, patch) {
       const cur = myVote(qid) || { ok: null, sins: [], knives: [], note: '' };
-      const next = Object.assign({}, cur, patch, { at: B.now() });
+      const next = Object.assign({}, cur, patch, { by: me.id, at: B.now() });
       return B.set('votes/' + qid + '/' + Z.deviceId, next);
     }
     function render() {
@@ -312,12 +315,13 @@
       const codes = qCodes();
       const all = questionList();
       const done = all.filter((q) => { const v = myVote(q.id); return v && v.ok !== null && v.ok !== undefined; }).length;
-      mount(root, 
+      mount(root,
         h('div', { class: 'stack' },
           h('h1', null, '指標健檢：互評時間'),
-          h('p', { class: 'muted' }, '逐題決定要不要列入問卷，順手用七宗罪與四把刀開刀。票數只有投影畫面看得到。'),
+          h('p', { class: 'muted' }, '逐題決定要不要列入問卷，順手用七宗罪與四把刀開刀。票數只有投影畫面看得到；講評會附上你的 ID。'),
           h('div', { class: 'notice' }, '已評 ', h('b', { class: 'num' }, done), ' / ', h('span', { class: 'num' }, all.length), ' 題'),
         ),
+        !me.id ? h('div', { class: 'notice warn' }, '你還沒進場，投票不會記名。', h('a', { href: '#join' }, '前往進場')) : null,
         all.length ? all.map((q) => {
           const v = myVote(q.id) || { ok: null, sins: [], knives: [], note: '' };
           const chip = (t, kind) => {
@@ -328,7 +332,7 @@
             } }, t);
           };
           return questionCard(q, codes[q.id], h('div', { class: 'stack' },
-            q.group === me.group ? h('span', { class: 'tag' }, '本組題目') : null,
+            isMine(q) ? h('span', { class: 'tag' }, '我出的題') : null,
             h('div', { class: 'vote-bar' },
               h('button', { class: v.ok === true ? 'on-ok' : '', onclick: () => save(q.id, { ok: true }) }, '👍 列入'),
               h('button', { class: v.ok === false ? 'on-no' : '', onclick: () => save(q.id, { ok: false }) }, '👎 不列入'),
@@ -378,11 +382,11 @@
         h('h2', null, '星座相信程度'),
         Z.BELIEF.map((b) => h('div', { class: 'stack', style: 'gap:6px' }, h('p', null, h('b', null, b.id + '　'), b.text), likertInput('a_' + b.id, answers[b.id], null, (v) => { answers[b.id] = v; }))),
       ) : null;
-      mount(root, 
+      mount(root,
         h('div', { class: 'stack' },
           h('p', { class: 'eyebrow' }, round === 1 ? '第一輪：自評' : '第二輪：代答'),
           h('h1', null, round === 1 ? '以「自己」作答' : '想一位你具體認識的「' + target + '座」朋友'),
-          h('p', { class: 'muted' }, round === 1 ? '照你自己的實際行為與想法回答。匿名，只記星座。' : '以那位朋友的實際行為作答，不是「你覺得' + target + '座應該怎樣」。'),
+          h('p', { class: 'muted' }, round === 1 ? '照你自己的實際行為與想法回答。這一輪匿名，只記星座，不記 ID。' : '以那位朋友的實際行為作答，不是「你覺得' + target + '座應該怎樣」。匿名。'),
         ),
         h('div', { class: 'card stack' },
           h('h2', null, round === 1 ? '你的星座' : '你自己的星座'),
@@ -432,7 +436,7 @@
     return render;
   }
   function buildCtx() {
-    return { S, session: session(), groups: groups(), questions: questionList(), finalQuestions: finalQuestions(), codes: qCodes(), dimName, voteStats, qTypeDesc, h, fmt, pct };
+    return { S, session: session(), questions: questionList(), finalQuestions: finalQuestions(), codes: qCodes(), dimName, voteStats, qTypeDesc, h, fmt, pct };
   }
 
   /* ---------- 畫面：投影 ---------- */
@@ -446,13 +450,12 @@
     }
     function render() {
       clear(root);
-      const s = session(); const codes = qCodes(); const gs = groups();
-      const joined = Z.toList(S.joined);
-      const head = h('div', { class: 'row between' },
+      const s = session(); const codes = qCodes(); const cs = concepts();
+      const joined = joinedList();
+      mount(root, h('div', { class: 'row between' },
         h('div', null, h('p', { class: 'eyebrow' }, '問卷設計：星座的傳說'), h('h1', null, Z.phaseOf(s.phase).label)),
         h('div', { class: 'row' }, h('span', { class: 'phase-pill live' }, '已進場 ' + joined.length + ' 人'), h('a', { class: 'btn small', href: '#admin' }, '控制台')),
-      );
-      mount(root, head);
+      ));
       if (s.phase === 'lobby') {
         const byEl = {}; joined.forEach((j) => { byEl[j.element] = (byEl[j.element] || 0) + 1; });
         mount(root, h('div', { class: 'board-grid' },
@@ -460,7 +463,7 @@
           h('div', { class: 'card stack' },
             h('h2', null, '掃碼進場'), h('div', { class: 'big num' }, joined.length), h('p', { class: 'muted' }, '人已進場'),
             h('div', { class: 'row' }, Z.ELEMENTS.map((e) => h('span', { class: 'tag el-' + e }, e + '象 ' + (byEl[e] || 0)))),
-            h('div', { class: 'row' }, Object.keys(gs).map((g) => h('span', { class: 'tag' }, gs[g].name + '：' + joined.filter((j) => j.group === g).length + ' 人'))),
+            h('div', { class: 'chips' }, joined.map((j) => h('span', { class: 'tag el-' + j.element, style: 'font-size:1rem' }, j.id + '・' + j.sign))),
           ),
         ));
         if (!qrDone) { qr(260); qrDone = true; }
@@ -468,11 +471,11 @@
       }
       if (s.phase === 'dimensions' || s.phase === 'propose') {
         const dims = dimList(); const qs = questionList();
-        mount(root, h('div', { class: 'board-grid' }, Object.keys(gs).map((g) => h('div', { class: 'card stack' },
-          h('div', { class: 'row between' }, h('h2', null, gs[g].name), h('span', { class: 'tag concept' }, gs[g].concept)),
-          dims.filter((d) => d.group === g).map((d) => h('div', null, h('b', null, d.name), d.indicators ? h('span', { class: 'muted' }, '：' + d.indicators) : null)),
-          s.phase === 'propose' ? qs.filter((q) => q.group === g).map((q) => h('div', { class: 'card flat' }, h('span', { class: 'q-code' }, codes[q.id] + ' '), q.text, ' ', h('span', { class: 'tag' }, qTypeDesc(q)), ' ', h('span', { class: 'tag' }, dimName(q.dimId)))) : null,
-          !dims.filter((d) => d.group === g).length && !qs.filter((q) => q.group === g).length ? h('p', { class: 'muted' }, '還沒有內容') : null,
+        mount(root, h('div', { class: 'board-grid' }, cs.map((c) => h('div', { class: 'card stack' },
+          h('div', { class: 'row between' }, h('h2', null, '概念「' + c + '」'), h('span', { class: 'tag concept' }, dims.filter((d) => d.concept === c).length + ' 構面・' + qs.filter((q) => q.concept === c).length + ' 題')),
+          dims.filter((d) => d.concept === c).map((d) => h('div', null, h('b', null, d.name), d.indicators ? h('span', { class: 'muted' }, '：' + d.indicators) : null, d.by ? h('span', { class: 'tag', style: 'margin-left:6px' }, d.by) : null)),
+          s.phase === 'propose' ? qs.filter((q) => q.concept === c).map((q) => h('div', { class: 'card flat' }, h('span', { class: 'q-code' }, codes[q.id] + ' '), q.text, ' ', h('span', { class: 'tag' }, qTypeDesc(q)), ' ', h('span', { class: 'tag' }, dimName(q.dimId)), q.by ? h('span', { class: 'tag' }, q.by) : null)) : null,
+          !dims.filter((d) => d.concept === c).length && !qs.filter((q) => q.concept === c).length ? h('p', { class: 'muted' }, '還沒有內容') : null,
         ))));
         return;
       }
@@ -480,13 +483,13 @@
         const qs = questionList().map((q) => Object.assign({ st: voteStats(q.id) }, q)).sort((a, b) => b.st.rate - a.st.rate || b.st.n - a.st.n);
         const tagTotals = {}; qs.forEach((q) => Object.entries(q.st.tags).forEach(([t, n]) => { tagTotals[t] = (tagTotals[t] || 0) + n; }));
         const voters = new Set(); Object.values(S.votes || {}).forEach((v) => Object.keys(v).forEach((d) => voters.add(d)));
-        mount(root, 
+        mount(root,
           h('p', { class: 'muted' }, '門檻：同意率 ≥ ' + pct(s.voteThreshold) + ' 且 ≥ ' + s.minVotes + ' 票列入。已有 ' + voters.size + ' 人投票。'),
           h('div', { class: 'board-grid' },
             h('div', { class: 'card tally' }, qs.map((q) => {
               const inc = S.survey && S.survey.included ? !!S.survey.included[q.id] : (q.st.n >= s.minVotes && q.st.rate >= s.voteThreshold);
               return h('div', { style: 'margin-bottom:10px' },
-                h('div', { class: 'row between' }, h('span', null, h('span', { class: 'q-code' }, codes[q.id] + ' '), q.text), h('span', { class: 'num muted' }, q.st.ok + ' 👍 ' + q.st.no + ' 👎', inc ? ' ✓' : '')),
+                h('div', { class: 'row between' }, h('span', null, h('span', { class: 'q-code' }, codes[q.id] + ' '), q.text, q.by ? h('span', { class: 'tag', style: 'margin-left:6px' }, q.by) : null), h('span', { class: 'num muted' }, q.st.ok + ' 👍 ' + q.st.no + ' 👎', inc ? ' ✓' : '')),
                 h('div', { class: 'bar' }, h('div', { class: 'ok', style: 'width:' + (q.st.n ? (q.st.ok / q.st.n) * 100 : 0) + '%' }), q.st.n ? h('div', { class: 'gap' }) : null, h('div', { class: 'no', style: 'width:' + (q.st.n ? (q.st.no / q.st.n) * 100 : 0) + '%' })),
                 Object.keys(q.st.tags).length ? h('div', { class: 'row', style: 'gap:4px' }, Object.entries(q.st.tags).sort((a, b) => b[1] - a[1]).map(([t, n]) => h('span', { class: 'tag' }, t + ' ×' + n))) : null,
               );
@@ -495,7 +498,7 @@
               h('h2', null, '開刀統計'),
               Object.keys(tagTotals).length ? h('div', { class: 'row' }, Object.entries(tagTotals).sort((a, b) => b[1] - a[1]).map(([t, n]) => h('span', { class: 'tag', style: 'font-size:1rem' }, t + ' ×' + n))) : h('p', { class: 'muted' }, '還沒有人開刀'),
               h('h2', null, '講評'),
-              h('div', { class: 'stack', style: 'gap:4px' }, qs.flatMap((q) => q.st.notes.map((n) => h('p', { style: 'font-size:1rem' }, h('span', { class: 'q-code' }, codes[q.id] + ' '), '「' + n + '」')))),
+              h('div', { class: 'stack', style: 'gap:4px' }, qs.flatMap((q) => q.st.notes.map((n) => h('p', { style: 'font-size:1rem' }, h('span', { class: 'q-code' }, codes[q.id] + ' '), n.by ? h('b', null, n.by + '：') : null, '「' + n.note + '」')))),
             ),
           ));
         return;
@@ -534,7 +537,7 @@
         function go() { if (pin === Z.adminPin) { me.pin = pin; LS.set('zs.pin', pin); render(); } else toast('PIN 不對'); }
         return;
       }
-      const s = session(); const gs = groups(); const codes = qCodes(); const qs = questionList();
+      const s = session(); const codes = qCodes(); const qs = questionList(); const cs = concepts();
       const setS = (patch) => B.update('session', Object.assign(patch, { updatedAt: B.now() }));
       if (!draftOrder) draftOrder = (S.survey && S.survey.order ? S.survey.order.filter((id) => S.questions && S.questions[id]) : []).concat(qs.map((q) => q.id).filter((id) => !(S.survey && S.survey.order || []).includes(id)));
       else draftOrder = draftOrder.filter((id) => S.questions && S.questions[id]).concat(qs.map((q) => q.id).filter((id) => !draftOrder.includes(id)));
@@ -542,10 +545,11 @@
       const rs = Z.toList(S.responses);
       const counts = { r1: rs.filter((r) => r.round === 1).length };
       Z.SIGNS.forEach((x) => { const n = rs.filter((r) => r.round === 2 && r.targetSign === x.name).length; if (n) counts[x.name] = n; });
+      const joined = joinedList();
 
-      mount(root, 
+      mount(root,
         h('div', { class: 'row between' }, h('h1', null, '老師控制台'), h('div', { class: 'row' }, h('a', { class: 'btn small', href: '#board', target: '_blank' }, '開投影畫面'), h('button', { class: 'small', onclick: () => { me.pin = ''; LS.set('zs.pin', ''); render(); } }, '登出'))),
-        h('p', { class: 'muted', style: 'font-size:.85rem' }, '後端：' + (B.kind === 'firebase' ? 'Firebase' : '本機測試模式（資料只在這台瀏覽器）') + '　班級代碼：' + Z.classId + '　已進場 ' + Object.keys(S.joined || {}).length + ' 人'),
+        h('p', { class: 'muted', style: 'font-size:.85rem' }, '後端：' + (B.kind === 'firebase' ? 'Firebase' : '本機測試模式（資料只在這台瀏覽器）') + '　班級代碼：' + Z.classId + '　已進場 ' + joined.length + ' 人' + (joined.length ? '：' + joined.map((j) => j.id).join('、') : '')),
         /* 流程 */
         h('div', { class: 'card stack' }, h('h2', null, '流程階段'),
           h('div', { class: 'admin-grid' }, Z.PHASES.map((p) => h('button', { class: s.phase === p.id ? 'primary' : '', onclick: () => setS({ phase: p.id }) }, p.label))),
@@ -561,7 +565,7 @@
             const q = S.questions[id]; const st = voteStats(id);
             return h('li', null,
               h('input', { type: 'checkbox', checked: !!draftIncluded[id], onchange: (e) => { draftIncluded[id] = e.target.checked; } }),
-              h('div', { class: 'txt' }, h('span', { class: 'q-code' }, codes[id] + ' '), q.text, h('div', { class: 'muted', style: 'font-size:.8rem' }, qTypeDesc(q) + '・' + dimName(q.dimId) + '・' + st.ok + '👍 ' + st.no + '👎（' + pct(st.rate) + '）' + (Object.keys(st.tags).length ? '・' + Object.entries(st.tags).map(([t, n]) => t + '×' + n).join(' ') : ''))),
+              h('div', { class: 'txt' }, h('span', { class: 'q-code' }, codes[id] + ' '), q.text, h('div', { class: 'muted', style: 'font-size:.8rem' }, (q.by ? q.by + '・' : '') + qTypeDesc(q) + '・' + dimName(q.dimId) + '・' + st.ok + '👍 ' + st.no + '👎（' + pct(st.rate) + '）' + (Object.keys(st.tags).length ? '・' + Object.entries(st.tags).map(([t, n]) => t + '×' + n).join(' ') : ''))),
               h('button', { class: 'small', disabled: i === 0, onclick: () => { [draftOrder[i - 1], draftOrder[i]] = [draftOrder[i], draftOrder[i - 1]]; render(); } }, '▲'),
               h('button', { class: 'small', disabled: i === draftOrder.length - 1, onclick: () => { [draftOrder[i + 1], draftOrder[i]] = [draftOrder[i], draftOrder[i + 1]]; render(); } }, '▼'),
             );
@@ -599,12 +603,13 @@
             h('button', { class: s.resultsOpen ? 'primary' : '', onclick: () => setS({ resultsOpen: !s.resultsOpen }) }, s.resultsOpen ? '已開放學生看結果（點此關閉）' : '開放學生看結果與下載'),
             h('button', { onclick: () => window.ZSR.downloadExcel(buildCtx()) }, '下載 Excel'),
           )),
-        /* 組別 */
-        h('div', { class: 'card stack' }, h('h2', null, '組別與概念'),
-          h('div', { class: 'grid-2' }, Object.keys(gs).map((g) => h('div', { class: 'row' },
-            h('input', { type: 'text', value: gs[g].name, style: 'max-width:120px', onchange: (e) => B.update('groups/' + g, { name: e.target.value.trim() || gs[g].name, concept: gs[g].concept }) }),
-            h('input', { type: 'text', value: gs[g].concept, style: 'max-width:140px', onchange: (e) => B.update('groups/' + g, { name: gs[g].name, concept: e.target.value.trim() || gs[g].concept }) }),
-          )))),
+        /* 概念 */
+        h('div', { class: 'card stack' }, h('h2', null, '待審的概念'),
+          h('p', { class: 'muted', style: 'font-size:.9rem' }, '預設「愛家」「浪漫」。想自創傳說（例如獅子座愛面子）就加一個概念；開獎時「愛家」對照土象、「浪漫」對照水象，其他概念不標預測。'),
+          h('div', { class: 'row' },
+            h('input', { type: 'text', id: 'concepts-input', value: cs.join('、'), placeholder: '愛家、浪漫', style: 'max-width:320px' }),
+            h('button', { class: 'small', onclick: () => { const v = document.getElementById('concepts-input').value.split(/[、,，\s]+/).map((x) => x.trim()).filter(Boolean); if (!v.length) return toast('至少一個概念'); setS({ concepts: v }).then(() => toast('已更新概念')); } }, '儲存'),
+          )),
         /* 資料 */
         h('div', { class: 'card stack' }, h('h2', null, '資料'),
           h('div', { class: 'row' },
@@ -626,35 +631,36 @@
   async function seedDemo() {
     const now = Date.now(); const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
     const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    const tree = { session: Object.assign({}, Z.DEFAULT_SESSION, { phase: 'results', resultsOpen: true, round: { n: 2, targetSign: '雙魚' }, updatedAt: now }), groups: Z.DEFAULT_GROUPS, dimensions: {}, questions: {}, votes: {}, joined: {}, responses: {} };
-    const dims = [
-      ['g1', '愛家', '時間投入', '每週與家人共餐次數・每天交談分鐘'], ['g1', '愛家', '情感表達', '主動聯絡家人的頻率'],
-      ['g2', '愛家', '金錢投入', '每月花在家人身上的金額'], ['g2', '愛家', '優先順序', '朋友邀約與家庭聚會衝突時的選擇'],
-      ['g3', '浪漫', '儀式感', '記得紀念日・特別布置約會'], ['g3', '浪漫', '驚喜行為', '沒有理由的小禮物'],
-      ['g4', '浪漫', '言語甜度', '說情話的頻率'], ['g4', '浪漫', '為對方花時間', '每週安排約會時數'],
-    ];
-    const dimIds = dims.map((d, i) => { const id = 'd' + (i + 1); tree.dimensions[id] = { group: d[0], concept: d[1], name: d[2], indicators: d[3], at: now + i }; return id; });
-    const qs = [
-      ['g1', '愛家', 0, '過去一週，你和家人一起吃飯幾次？', 'ratio', '次／週'],
-      ['g1', '愛家', 1, '我會主動打電話或傳訊息關心家人。', 'likert'],
-      ['g2', '愛家', 2, '上個月你花在家人身上（禮物、請客、家用）大約幾元？', 'ratio', '元／月'],
-      ['g2', '愛家', 3, '朋友邀約和家庭聚會撞期時，你通常選哪個？', 'choice', null, ['家庭聚會', '朋友邀約', '看情況', '其他']],
-      ['g3', '浪漫', 4, '過去一年，你記得並慶祝了幾個紀念日（生日、交往日等）？', 'ratio', '個／年'],
-      ['g3', '浪漫', 5, '我會為對方製造驚喜。', 'likert'],
-      ['g4', '浪漫', 6, '我經常對伴侶或喜歡的人說甜言蜜語。', 'likert'],
-      ['g4', '浪漫', 7, '你每週會花幾小時安排或進行約會？', 'ratio', '小時／週'],
-      ['g1', '愛家', 0, '你不認為金牛座並非不愛家嗎？', 'likert'],
-    ];
-    const devices = Array.from({ length: 14 }, (_, i) => 'demo-' + (i + 1));
+    const tree = { session: Object.assign({}, Z.DEFAULT_SESSION, { phase: 'results', resultsOpen: true, round: { n: 2, targetSign: '雙魚' }, updatedAt: now }), dimensions: {}, questions: {}, votes: {}, joined: {}, responses: {} };
+    const names = ['小鹿', '阿哲', '婷婷', '大熊', '小瑜', '阿凱', '佳佳', '阿翔', '小安', '阿明', '美美', '阿宏', '小芸', '阿傑'];
     const signs = ['金牛', '金牛', '處女', '摩羯', '雙魚', '雙魚', '巨蟹', '天蠍', '牡羊', '獅子', '射手', '雙子', '天秤', '水瓶'];
-    devices.forEach((d, i) => { tree.joined[d] = { sign: signs[i], element: Z.signElement(signs[i]), group: 'g' + ((i % 4) + 1), at: now }; });
+    const devices = names.map((_, i) => 'demo-' + (i + 1));
+    devices.forEach((d, i) => { tree.joined[d] = { id: names[i], sign: signs[i], element: Z.signElement(signs[i]), at: now + i }; });
+    const dims = [
+      ['愛家', '時間投入', '每週與家人共餐次數・每天交談分鐘'], ['愛家', '情感表達', '主動聯絡家人的頻率'],
+      ['愛家', '金錢投入', '每月花在家人身上的金額'], ['愛家', '優先順序', '朋友邀約與家庭聚會衝突時的選擇'],
+      ['浪漫', '儀式感', '記得紀念日・特別布置約會'], ['浪漫', '驚喜行為', '沒有理由的小禮物'],
+      ['浪漫', '言語甜度', '說情話的頻率'], ['浪漫', '為對方花時間', '每週安排約會時數'],
+    ];
+    const dimIds = dims.map((d, i) => { const id = 'd' + (i + 1); tree.dimensions[id] = { concept: d[0], name: d[1], indicators: d[2], by: names[i], at: now + i, deviceId: devices[i] }; return id; });
+    const qs = [
+      ['愛家', 0, '過去一週，你和家人一起吃飯幾次？', 'ratio', '次／週'],
+      ['愛家', 1, '我會主動打電話或傳訊息關心家人。', 'likert'],
+      ['愛家', 2, '上個月你花在家人身上（禮物、請客、家用）大約幾元？', 'ratio', '元／月'],
+      ['愛家', 3, '朋友邀約和家庭聚會撞期時，你通常選哪個？', 'choice', null, ['家庭聚會', '朋友邀約', '看情況', '其他']],
+      ['浪漫', 4, '過去一年，你記得並慶祝了幾個紀念日（生日、交往日等）？', 'ratio', '個／年'],
+      ['浪漫', 5, '我會為對方製造驚喜。', 'likert'],
+      ['浪漫', 6, '我經常對伴侶或喜歡的人說甜言蜜語。', 'likert'],
+      ['浪漫', 7, '你每週會花幾小時安排或進行約會？', 'ratio', '小時／週'],
+      ['愛家', 0, '你不認為金牛座並非不愛家嗎？', 'likert'],
+    ];
     const qIds = qs.map((q, i) => {
-      const id = 'q' + (i + 1);
-      tree.questions[id] = { group: q[0], concept: q[1], dimId: dimIds[q[2]], text: q[3], type: q[4], unit: q[5] || '', anchors: q[4] === 'likert' ? { low: '非常不同意', high: '非常同意' } : null, options: q[6] || null, techniques: [pick(Z.TECHNIQUES)], version: 1, at: now + 100 + i, deviceId: 'demo' };
+      const id = 'q' + (i + 1); const who = i % names.length;
+      tree.questions[id] = { concept: q[0], dimId: dimIds[q[1]], text: q[2], type: q[3], unit: q[4] || '', anchors: q[3] === 'likert' ? { low: '非常不同意', high: '非常同意' } : null, options: q[5] || null, techniques: [pick(Z.TECHNIQUES)], version: 1, by: names[who], at: now + 100 + i, deviceId: devices[who] };
       tree.votes[id] = {};
-      devices.forEach((d) => {
+      devices.forEach((d, j) => {
         const bad = i === 8; const ok = bad ? Math.random() < 0.15 : Math.random() < 0.8;
-        tree.votes[id][d] = { ok, sins: bad && !ok ? ['雙重否定'] : (Math.random() < 0.15 ? [pick(Z.SINS)] : []), knives: Math.random() < 0.2 ? [pick(Z.KNIVES)] : [], note: bad && Math.random() < 0.3 ? '唸三次還是不懂' : '', at: now };
+        tree.votes[id][d] = { ok, sins: bad && !ok ? ['雙重否定'] : (Math.random() < 0.15 ? [pick(Z.SINS)] : []), knives: Math.random() < 0.2 ? [pick(Z.KNIVES)] : [], note: bad && Math.random() < 0.3 ? '唸三次還是不懂' : '', by: names[j], at: now };
       });
       return id;
     });
@@ -672,7 +678,7 @@
       tree.responses[dev + '_r' + round + '_' + (round === 2 ? target : 'self')] = { round, targetSign: round === 2 ? target : '', mySign, element: el, answers, deviceId: dev, at: now };
     };
     devices.forEach((d, i) => { resp(d, 1, '', signs[i]); resp(d, 2, '金牛', signs[i]); resp(d, 2, '雙魚', signs[i]); });
-    const flat = Object.assign(clearPaths(), { session: tree.session, groups: tree.groups, survey: tree.survey });
+    const flat = Object.assign(clearPaths(), { session: tree.session, survey: tree.survey });
     ['dimensions', 'questions', 'joined', 'responses'].forEach((k) => Object.keys(tree[k]).forEach((id) => { flat[k + '/' + id] = tree[k][id]; }));
     Object.keys(tree.votes).forEach((q) => Object.keys(tree.votes[q]).forEach((d) => { flat['votes/' + q + '/' + d] = tree.votes[q][d]; }));
     await B.multi(flat);
@@ -685,7 +691,7 @@
     return flat;
   }
   function resetAll() {
-    return B.multi(Object.assign(clearPaths(), { session: Object.assign({}, Z.DEFAULT_SESSION, { updatedAt: Date.now() }), groups: Z.DEFAULT_GROUPS, survey: null }));
+    return B.multi(Object.assign(clearPaths(), { session: Object.assign({}, Z.DEFAULT_SESSION, { updatedAt: Date.now() }), survey: null }));
   }
 
   /* ---------- 路由 ---------- */
@@ -717,7 +723,7 @@
     if (current && current.update) current.update();
   }
   window.addEventListener('hashchange', navigate);
-  let booted = false; const KEYS = ['session', 'groups', 'dimensions', 'questions', 'votes', 'survey', 'responses', 'joined']; const arrived = new Set();
+  let booted = false; const KEYS = ['session', 'dimensions', 'questions', 'votes', 'survey', 'responses', 'joined']; const arrived = new Set();
   KEYS.forEach((k) => B.listen(k, (v) => {
     S[k] = v; arrived.add(k);
     if (!booted && arrived.size === KEYS.length) { booted = true; lastPhase = session().phase; navigate(); return; }
@@ -725,5 +731,5 @@
   }));
   /* Firebase 連不上時 3 秒後仍顯示畫面 */
   setTimeout(() => { if (!booted) { booted = true; lastPhase = session().phase; navigate(); } }, 3000);
-  window.ZSApp = { S, me, session, groups, buildCtx };
+  window.ZSApp = { S, me, session, concepts, buildCtx };
 })();

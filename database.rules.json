@@ -5,16 +5,15 @@
         ".read": true,
         ".write": false,
         "session": { ".write": true },
-        "groups": { ".write": true },
         "survey": { ".write": true },
         "joined": {
-          "$deviceId": { ".write": true, ".validate": "newData.hasChildren(['sign', 'group'])" }
+          "$deviceId": { ".write": true, ".validate": "!newData.exists() || (newData.hasChildren(['id', 'sign']) && newData.child('id').val().length <= 20)" }
         },
         "dimensions": {
-          "$id": { ".write": true, ".validate": "!newData.exists() || (newData.hasChildren(['group', 'name']) && newData.child('name').isString() && newData.child('name').val().length <= 100)" }
+          "$id": { ".write": true, ".validate": "!newData.exists() || (newData.hasChildren(['concept', 'name']) && newData.child('name').isString() && newData.child('name').val().length <= 100)" }
         },
         "questions": {
-          "$id": { ".write": true, ".validate": "!newData.exists() || (newData.hasChildren(['text', 'type', 'concept', 'group']) && newData.child('text').isString() && newData.child('text').val().length <= 500)" }
+          "$id": { ".write": true, ".validate": "!newData.exists() || (newData.hasChildren(['text', 'type', 'concept']) && newData.child('text').isString() && newData.child('text').val().length <= 500)" }
         },
         "votes": {
           "$questionId": {

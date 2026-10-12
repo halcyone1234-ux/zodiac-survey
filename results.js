@@ -204,14 +204,14 @@
   /* ---------- Excel ---------- */
   function downloadExcel(ctx) {
     if (!window.XLSX) return alert('Excel 模組尚未載入，請稍後再試。');
-    const S = ctx.S; const R = compute(ctx); const gs = ctx.groups; const codes = ctx.codes;
+    const S = ctx.S; const R = compute(ctx); const codes = ctx.codes;
     const ts = (t) => (t ? new Date(t).toLocaleString('zh-TW', { hour12: false }) : '');
     const wb = XLSX.utils.book_new();
     const sheet = (name, rows) => { const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ '（無資料）': '' }]); XLSX.utils.book_append_sheet(wb, ws, name); };
     /* 題目 */
     sheet('題目', ctx.questions.map((q) => { const st = ctx.voteStats(q.id); return {
       代碼: codes[q.id], 題目: q.text, 概念: q.concept, 構面: ctx.dimName(q.dimId), 題型: ctx.qTypeDesc(q), 單位或選項: q.type === 'choice' ? (q.options || []).join('／') : q.unit || (q.anchors ? '1=' + q.anchors.low + '，5=' + q.anchors.high : ''),
-      組別: (gs[q.group] || {}).name || q.group, 用了哪一招: (q.techniques || []).join('；'), 版本: q.version || 1,
+      出題者: q.by || '', 用了哪一招: (q.techniques || []).join('；'), 版本: q.version || 1,
       列入問卷: S.survey && S.survey.included && S.survey.included[q.id] ? '是' : '否', 列入票: st.ok, 不列入票: st.no, 同意率: st.n ? Math.round(st.rate * 100) / 100 : '',
       開刀標籤: Object.entries(st.tags).map(([t, n]) => t + '×' + n).join('；'), 講評: st.notes.join('；'),
     }; }));
@@ -232,15 +232,16 @@
     sheet('作答_長表', long);
     /* 投票 */
     const votes = [];
-    ctx.questions.forEach((q) => Object.entries((S.votes || {})[q.id] || {}).forEach(([dev, v]) => votes.push({ 題目代碼: codes[q.id], 題目: q.text, 投票者: dev.slice(0, 8), 列入: v.ok === true ? '是' : v.ok === false ? '否' : '', 七宗罪: (v.sins || []).join('；'), 四把刀: (v.knives || []).join('；'), 講評: v.note || '' })));
+    ctx.questions.forEach((q) => Object.entries((S.votes || {})[q.id] || {}).forEach(([dev, v]) => votes.push({ 題目代碼: codes[q.id], 題目: q.text, 投票者: v.by || dev.slice(0, 8), 列入: v.ok === true ? '是' : v.ok === false ? '否' : '', 七宗罪: (v.sins || []).join('；'), 四把刀: (v.knives || []).join('；'), 講評: v.note || '' })));
     sheet('投票紀錄', votes);
     /* 構面表 */
-    sheet('構面表', Z.toList(S.dimensions, 'at').map((d) => ({ 組別: (gs[d.group] || {}).name || d.group, 概念: d.concept, 構面: d.name, 指標: d.indicators || '' })));
+    sheet('構面表', Z.toList(S.dimensions, 'at').map((d) => ({ 概念: d.concept, 構面: d.name, 指標: d.indicators || '', 提出者: d.by || '' })));
     /* 摘要 */
     const sum = [];
     R.byElement.forEach((b) => { if (b.q.type === 'choice') return; const row = { 題目代碼: b.code, 題目: b.q.text, 概念: b.q.concept, 題型: ctx.qTypeDesc(b.q) }; Z.ELEMENTS.forEach((el) => { row[el + '象平均'] = b.cells[el].mean === null ? '' : Math.round(b.cells[el].mean * 100) / 100; row[el + '象n'] = b.cells[el].n; }); row['全班平均'] = b.overall.mean === null ? '' : Math.round(b.overall.mean * 100) / 100; sum.push(row); });
     R.selfProxy.forEach((sp) => sp.rows.forEach((r) => { if (r.q.type === 'choice') return; sum.push({ 題目代碼: r.code, 題目: r.q.text, 概念: r.q.concept, 題型: '自評 vs 代答（' + sp.target + '）', 真星座自評平均: r.self.mean === null ? '' : Math.round(r.self.mean * 100) / 100, 自評n: r.self.n, 代答平均: r.proxy.mean === null ? '' : Math.round(r.proxy.mean * 100) / 100, 代答n: r.proxy.n }); }));
     sheet('摘要', sum);
+    sheet('進場名單', Z.toList(S.joined, 'at').map((j) => ({ ID: j.id || '', 星座: j.sign, 元素: j.element, 進場時間: ts(j.at) })));
     const d = new Date(); const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
     XLSX.writeFile(wb, '星座問卷_' + Z.classId + '_' + stamp + '.xlsx');
   }

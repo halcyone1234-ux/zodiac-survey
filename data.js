@@ -40,13 +40,9 @@
     { id: 'B2', text: '做重要決定前，我會參考星座運勢。' },
     { id: 'B3', text: '認識新朋友時，我會想知道對方的星座。' },
   ];
-  const DEFAULT_GROUPS = {
-    g1: { name: '第 1 組', concept: '愛家' }, g2: { name: '第 2 組', concept: '愛家' },
-    g3: { name: '第 3 組', concept: '浪漫' }, g4: { name: '第 4 組', concept: '浪漫' },
-  };
   const DEFAULT_SESSION = {
     phase: 'lobby', round: { n: 1, targetSign: '金牛' }, voteThreshold: 0.5, minVotes: 3,
-    belief: { enabled: true, position: 'end' }, resultsOpen: false, updatedAt: 0,
+    belief: { enabled: true, position: 'end' }, resultsOpen: false, concepts: ['愛家', '浪漫'], updatedAt: 0,
   };
 
   /* ---- localStorage helpers ---- */
@@ -138,7 +134,7 @@
 
   window.ZS = {
     SIGNS, ELEMENTS, ELEMENT_SIGNS, signElement, PHASES, phaseOf, SINS, KNIVES, TECHNIQUES, QTYPES, BELIEF,
-    DEFAULT_GROUPS, DEFAULT_SESSION, LS, deviceId, classId, backend, toList,
+    DEFAULT_SESSION, LS, deviceId, classId, backend, toList,
     adminPin: String((window.ZS_CONFIG && window.ZS_CONFIG.adminPin) || '1151'),
     siteUrl() {
       const base = location.origin + location.pathname.replace(/[^/]*$/, '');
