@@ -1,0 +1,33 @@
+{
+  "rules": {
+    "classes": {
+      "$classId": {
+        ".read": true,
+        ".write": false,
+        "session": { ".write": true },
+        "groups": { ".write": true },
+        "survey": { ".write": true },
+        "joined": {
+          "$deviceId": { ".write": true, ".validate": "newData.hasChildren(['sign', 'group'])" }
+        },
+        "dimensions": {
+          "$id": { ".write": true, ".validate": "!newData.exists() || (newData.hasChildren(['group', 'name']) && newData.child('name').isString() && newData.child('name').val().length <= 100)" }
+        },
+        "questions": {
+          "$id": { ".write": true, ".validate": "!newData.exists() || (newData.hasChildren(['text', 'type', 'concept', 'group']) && newData.child('text').isString() && newData.child('text').val().length <= 500)" }
+        },
+        "votes": {
+          "$questionId": {
+            "$deviceId": { ".write": true, ".validate": "!newData.exists() || newData.child('note').val().length <= 300" }
+          }
+        },
+        "responses": {
+          "$respId": {
+            ".write": "!data.exists() || data.child('deviceId').val() === newData.child('deviceId').val() || !newData.exists()",
+            ".validate": "!newData.exists() || newData.hasChildren(['round', 'mySign', 'answers', 'deviceId'])"
+          }
+        }
+      }
+    }
+  }
+}
